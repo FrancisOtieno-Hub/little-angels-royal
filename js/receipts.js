@@ -470,7 +470,7 @@ function renderReceipt(learner, term, payments, totalFees, totalPaid, balance, f
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
         <img src="assets/logo.png" alt="School Logo" style="height: 45px; width: auto;" onerror="this.style.display='none'">
         <div style="text-align: center; flex: 1; margin: 0 10px;">
-          <h1 style="margin: 0;">LITTLE ANGELS ACADEMY</h1>
+          <h1 style="margin: 0;">LITTLE ANGELS ROYAL SCHOOL</h1>
           <p class="motto" style="margin: 2px 0;">Quality Education, Service and Discipline</p>
         </div>
         <img src="assets/logo.png" alt="School Logo" style="height: 45px; width: auto;" onerror="this.style.display='none'">
