@@ -10,6 +10,7 @@ const loadingLearners = document.getElementById("loadingLearners");
 const alertContainer = document.getElementById("alertContainer");
 const saveBtn = document.getElementById("saveBtn");
 const classFilter = document.getElementById("classFilter");
+const searchInput = document.getElementById("searchInput");
 const exportExcelBtn = document.getElementById("exportExcelBtn");
 const learnerStats = document.getElementById("learnerStats");
 
@@ -21,9 +22,16 @@ const previewTable = document.getElementById("previewTable");
 const previewBody = previewTable.querySelector("tbody");
 const bulkClassSelect = document.getElementById("bulkClassSelect");
 
+// Edit modal elements
+const editModal = document.getElementById("editModal");
+const editForm = document.getElementById("editForm");
+const cancelEditBtn = document.getElementById("cancelEditBtn");
+const saveEditBtn = document.getElementById("saveEditBtn");
+
 let bulkLearners = [];
 let allLearnersData = [];
 let allClassesData = [];
+let currentEditingLearnerId = null;
 
 /* ===========================
    UTILITIES
@@ -81,6 +89,104 @@ function excelDateToJSDate(serial) {
 }
 
 /* ===========================
+   PHONE NUMBER VALIDATION
+=========================== */
+function validatePhoneNumber(phone) {
+  if (!phone) {
+    return { valid: true, normalized: null }; // Empty is OK
+  }
+  
+  // Clean the phone number
+  const cleaned = String(phone).replace(/[\s\-()]/g, '');
+  
+  // Kenyan phone validation
+  // Valid formats: 
+  // Mobile: 0712345678, +254712345678, 254712345678
+  // Landline: 0101234567, 0201234567, 0411234567, etc.
+  const patterns = [
+    /^0[17]\d{8}$/,           // Mobile: 0712345678, 0722345678, etc.
+    /^0[2-6]\d{8}$/,          // Landline: 0201234567, 0411234567, etc.
+    /^\+2540?[17]\d{8}$/,     // Mobile international: +254712345678
+    /^2540?[17]\d{8}$/,       // Mobile international: 254712345678
+    /^\+2540?[2-6]\d{8}$/,    // Landline international: +254201234567
+    /^2540?[2-6]\d{8}$/       // Landline international: 254201234567
+  ];
+  
+  const isValid = patterns.some(pattern => pattern.test(cleaned));
+  
+  if (!isValid) {
+    if (cleaned.length < 10) {
+      return { valid: false, error: "Too short (need 10 digits)" };
+    } else if (cleaned.length > 13) {
+      return { valid: false, error: "Too long" };
+    } else {
+      return { valid: false, error: "Invalid format" };
+    }
+  }
+  
+  // Normalize to standard format (0XXXXXXXXX)
+  let normalized = cleaned;
+  if (cleaned.startsWith('+254')) {
+    normalized = '0' + cleaned.substring(4);
+  } else if (cleaned.startsWith('254')) {
+    normalized = '0' + cleaned.substring(3);
+  }
+  
+  return { valid: true, normalized };
+}
+
+/* ===========================
+   PHONE INPUT FORMATTER
+=========================== */
+function setupPhoneInputFormatter() {
+  const phoneInputs = [
+    document.getElementById("guardianPhone"),
+    document.getElementById("guardianPhone2"),
+    document.getElementById("editGuardianPhone"),
+    document.getElementById("editGuardianPhone2")
+  ].filter(input => input !== null);
+  
+  phoneInputs.forEach(guardianPhoneInput => {
+    guardianPhoneInput.addEventListener('input', function(e) {
+      // Remove non-digits except + at start
+      let value = e.target.value;
+      if (value.startsWith('+')) {
+        value = '+' + value.substring(1).replace(/\D/g, '');
+      } else {
+        value = value.replace(/\D/g, '');
+      }
+      
+      // Limit length
+      if (value.startsWith('+254')) {
+        value = value.substring(0, 13); // +254XXXXXXXXX
+      } else if (value.startsWith('254')) {
+        value = value.substring(0, 12); // 254XXXXXXXXX
+      } else if (value.startsWith('0')) {
+        value = value.substring(0, 10); // 0XXXXXXXXX
+      }
+      
+      e.target.value = value;
+    });
+    
+    guardianPhoneInput.addEventListener('blur', function(e) {
+      const value = e.target.value.trim();
+      if (!value) {
+        e.target.style.borderColor = '';
+        return;
+      }
+      
+      const validation = validatePhoneNumber(value);
+      if (validation.valid) {
+        e.target.style.borderColor = '#10b981';
+        e.target.value = validation.normalized;
+      } else {
+        e.target.style.borderColor = '#ef4444';
+      }
+    });
+  });
+}
+
+/* ===========================
    AUTH CHECK
 =========================== */
 async function checkAuth() {
@@ -123,6 +229,12 @@ async function loadClasses() {
       filterOption.value = cls.id;
       filterOption.textContent = cls.name;
       classFilter.appendChild(filterOption);
+      
+      // Add to edit form class select
+      const editOption = document.createElement("option");
+      editOption.value = cls.id;
+      editOption.textContent = cls.name;
+      document.getElementById("editClassSelect").appendChild(editOption);
     });
   } catch (error) {
     showAlert("Error loading classes: " + error.message, "error");
@@ -172,13 +284,38 @@ form.addEventListener("submit", async (e) => {
   setLoading(saveBtn, true);
 
   try {
+    const guardianPhone = document.getElementById("guardianPhone")?.value.trim() || "";
+    const guardianPhone2 = document.getElementById("guardianPhone2")?.value.trim() || "";
+    
+    // Validate first phone number if provided
+    if (guardianPhone) {
+      const phoneValidation = validatePhoneNumber(guardianPhone);
+      if (!phoneValidation.valid) {
+        showAlert(`Invalid phone number 1: ${phoneValidation.error}. Use format: 0712345678 or 0201234567`, "error");
+        setLoading(saveBtn, false, "Save Learner");
+        return;
+      }
+    }
+    
+    // Validate second phone number if provided
+    if (guardianPhone2) {
+      const phoneValidation2 = validatePhoneNumber(guardianPhone2);
+      if (!phoneValidation2.valid) {
+        showAlert(`Invalid phone number 2: ${phoneValidation2.error}. Use format: 0712345678 or 0201234567`, "error");
+        setLoading(saveBtn, false, "Save Learner");
+        return;
+      }
+    }
+
     const learner = {
       admission_no: admissionNoInput.value,
       first_name: document.getElementById("firstName").value.trim(),
       last_name: document.getElementById("lastName").value.trim(),
       gender: document.getElementById("gender").value,
       date_of_birth: document.getElementById("dob").value,
-      class_id: classSelect.value
+      class_id: classSelect.value,
+      guardian_phone: guardianPhone || null,
+      guardian_phone_2: guardianPhone2 || null
     };
 
     const { error } = await supabase
@@ -199,6 +336,157 @@ form.addEventListener("submit", async (e) => {
 });
 
 /* ===========================
+   EDIT LEARNER - OPEN MODAL
+=========================== */
+window.editLearner = async function(learnerId) {
+  try {
+    // Fetch learner details
+    const { data: learner, error } = await supabase
+      .from("learners")
+      .select(`
+        id,
+        admission_no,
+        first_name,
+        last_name,
+        gender,
+        date_of_birth,
+        class_id,
+        guardian_phone,
+        guardian_phone_2
+      `)
+      .eq("id", learnerId)
+      .single();
+
+    if (error) throw error;
+
+    // Populate edit form
+    currentEditingLearnerId = learner.id;
+    document.getElementById("editAdmissionNo").value = learner.admission_no;
+    document.getElementById("editFirstName").value = learner.first_name;
+    document.getElementById("editLastName").value = learner.last_name;
+    document.getElementById("editGender").value = learner.gender || "";
+    document.getElementById("editDob").value = learner.date_of_birth || "";
+    document.getElementById("editClassSelect").value = learner.class_id;
+    document.getElementById("editGuardianPhone").value = learner.guardian_phone || "";
+    document.getElementById("editGuardianPhone2").value = learner.guardian_phone_2 || "";
+
+    // Show modal
+    editModal.classList.remove("hidden");
+    editModal.style.display = "flex";
+
+  } catch (error) {
+    showAlert("Error loading learner details: " + error.message, "error");
+  }
+};
+
+/* ===========================
+   SAVE EDIT
+=========================== */
+editForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  if (!currentEditingLearnerId) return;
+
+  setLoading(saveEditBtn, true);
+
+  try {
+    const guardianPhone = document.getElementById("editGuardianPhone").value.trim();
+    const guardianPhone2 = document.getElementById("editGuardianPhone2").value.trim();
+    
+    // Validate phones
+    if (guardianPhone) {
+      const validation = validatePhoneNumber(guardianPhone);
+      if (!validation.valid) {
+        showAlert(`Invalid phone number 1: ${validation.error}`, "error");
+        setLoading(saveEditBtn, false, "Save Changes");
+        return;
+      }
+    }
+    
+    if (guardianPhone2) {
+      const validation2 = validatePhoneNumber(guardianPhone2);
+      if (!validation2.valid) {
+        showAlert(`Invalid phone number 2: ${validation2.error}`, "error");
+        setLoading(saveEditBtn, false, "Save Changes");
+        return;
+      }
+    }
+
+    const updates = {
+      first_name: document.getElementById("editFirstName").value.trim(),
+      last_name: document.getElementById("editLastName").value.trim(),
+      gender: document.getElementById("editGender").value,
+      date_of_birth: document.getElementById("editDob").value,
+      class_id: document.getElementById("editClassSelect").value,
+      guardian_phone: guardianPhone || null,
+      guardian_phone_2: guardianPhone2 || null
+    };
+
+    const { error } = await supabase
+      .from("learners")
+      .update(updates)
+      .eq("id", currentEditingLearnerId);
+
+    if (error) throw error;
+
+    showAlert("Learner details updated successfully!");
+    closeEditModal();
+    await loadLearners();
+
+  } catch (error) {
+    showAlert("Error updating learner: " + error.message, "error");
+  } finally {
+    setLoading(saveEditBtn, false, "Save Changes");
+  }
+});
+
+/* ===========================
+   CLOSE EDIT MODAL
+=========================== */
+function closeEditModal() {
+  editModal.classList.add("hidden");
+  editModal.style.display = "none";
+  currentEditingLearnerId = null;
+  editForm.reset();
+}
+
+cancelEditBtn.addEventListener("click", closeEditModal);
+
+// Close modal when clicking outside
+editModal.addEventListener("click", function(e) {
+  if (e.target === editModal) {
+    closeEditModal();
+  }
+});
+
+/* ===========================
+   SOFT DELETE LEARNER
+=========================== */
+window.deleteLearner = async function(learnerId, learnerName) {
+  const confirmMsg = `Are you sure you want to remove "${learnerName}"?\n\nThis learner will be archived (not permanently deleted) and can be restored later if needed.`;
+  
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+
+  try {
+    // Soft delete by setting active = false
+    const { error } = await supabase
+      .from("learners")
+      .update({ active: false })
+      .eq("id", learnerId);
+
+    if (error) throw error;
+
+    showAlert(`✅ "${learnerName}" has been archived successfully`);
+    await loadLearners();
+
+  } catch (error) {
+    showAlert("Error archiving learner: " + error.message, "error");
+  }
+};
+
+/* ===========================
    LOAD LEARNERS
 =========================== */
 async function loadLearners(filterClassId = null) {
@@ -210,12 +498,15 @@ async function loadLearners(filterClassId = null) {
     let query = supabase
       .from("learners")
       .select(`
+        id,
         admission_no,
         first_name,
         last_name,
         gender,
         date_of_birth,
         class_id,
+        guardian_phone,
+        guardian_phone_2,
         classes(id, name, level)
       `)
       .eq("active", true)
@@ -242,11 +533,48 @@ async function loadLearners(filterClassId = null) {
 
     data.forEach(l => {
       const row = document.createElement("tr");
+      
+      // Format phone numbers display
+      let phoneDisplay = '';
+      if (l.guardian_phone && l.guardian_phone_2) {
+        phoneDisplay = `
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <span style="color: #10b981;">✓ ${l.guardian_phone}</span>
+            <span style="color: #10b981;">✓ ${l.guardian_phone_2}</span>
+          </div>
+        `;
+      } else if (l.guardian_phone) {
+        phoneDisplay = `<span style="color: #10b981;">✓ ${l.guardian_phone}</span>`;
+      } else if (l.guardian_phone_2) {
+        phoneDisplay = `<span style="color: #10b981;">✓ ${l.guardian_phone_2}</span>`;
+      } else {
+        phoneDisplay = '<span style="color: #9ca3af;">-</span>';
+      }
+      
       row.innerHTML = `
         <td>${l.admission_no}</td>
         <td>${l.first_name} ${l.last_name}</td>
         <td>${l.classes?.name || 'N/A'}</td>
         <td>${l.gender || 'N/A'}</td>
+        <td>${phoneDisplay}</td>
+        <td>
+          <div style="display: flex; gap: 8px; justify-content: center;">
+            <button 
+              onclick="editLearner('${l.id}')" 
+              class="btn-icon btn-edit"
+              title="Edit learner"
+            >
+              ✏️
+            </button>
+            <button 
+              onclick="deleteLearner('${l.id}', '${l.first_name} ${l.last_name}')" 
+              class="btn-icon btn-delete"
+              title="Archive learner"
+            >
+              🗑️
+            </button>
+          </div>
+        </td>
       `;
       tableBody.appendChild(row);
     });
@@ -267,6 +595,8 @@ function updateLearnerStats(learners) {
   const total = learners.length;
   const male = learners.filter(l => l.gender === 'Male').length;
   const female = learners.filter(l => l.gender === 'Female').length;
+  const withPhone = learners.filter(l => l.guardian_phone || l.guardian_phone_2).length;
+  const withBothPhones = learners.filter(l => l.guardian_phone && l.guardian_phone_2).length;
   
   learnerStats.innerHTML = `
     <div style="padding: 12px 16px; background: var(--background); border-radius: var(--radius-sm); border-left: 3px solid var(--primary);">
@@ -281,6 +611,14 @@ function updateLearnerStats(learners) {
       <div style="font-size: 0.85rem; color: var(--text-secondary);">Female</div>
       <div style="font-size: 1.5rem; font-weight: 700; color: #ec4899;">${female}</div>
     </div>
+    <div style="padding: 12px 16px; background: var(--background); border-radius: var(--radius-sm); border-left: 3px solid #10b981;">
+      <div style="font-size: 0.85rem; color: var(--text-secondary);">With Phone</div>
+      <div style="font-size: 1.5rem; font-weight: 700; color: #10b981;">${withPhone}</div>
+    </div>
+    <div style="padding: 12px 16px; background: var(--background); border-radius: var(--radius-sm); border-left: 3px solid #f59e0b;">
+      <div style="font-size: 0.85rem; color: var(--text-secondary);">Both Phones</div>
+      <div style="font-size: 1.5rem; font-weight: 700; color: #f59e0b;">${withBothPhones}</div>
+    </div>
   `;
 }
 
@@ -291,6 +629,67 @@ classFilter.addEventListener('change', (e) => {
   const selectedClass = e.target.value;
   loadLearners(selectedClass || null);
 });
+
+/* ===========================
+   SEARCH FUNCTIONALITY
+=========================== */
+searchInput?.addEventListener('input', (e) => {
+  const searchTerm = e.target.value.toLowerCase().trim();
+  
+  // Get all table rows
+  const rows = tableBody.querySelectorAll('tr');
+  let visibleCount = 0;
+  
+  rows.forEach(row => {
+    // Get all text content from the row (excluding action buttons)
+    const admissionNo = row.cells[0]?.textContent.toLowerCase() || '';
+    const name = row.cells[1]?.textContent.toLowerCase() || '';
+    const className = row.cells[2]?.textContent.toLowerCase() || '';
+    const gender = row.cells[3]?.textContent.toLowerCase() || '';
+    const phone = row.cells[4]?.textContent.toLowerCase() || '';
+    
+    // Check if any field contains the search term
+    const matches = admissionNo.includes(searchTerm) ||
+                   name.includes(searchTerm) ||
+                   className.includes(searchTerm) ||
+                   gender.includes(searchTerm) ||
+                   phone.includes(searchTerm);
+    
+    // Show/hide row based on match
+    if (matches || searchTerm === '') {
+      row.style.display = '';
+      visibleCount++;
+    } else {
+      row.style.display = 'none';
+    }
+  });
+  
+  // Update stats to show filtered count
+  if (searchTerm) {
+    updateSearchStats(visibleCount, rows.length);
+  } else {
+    updateLearnerStats(allLearnersData);
+  }
+});
+
+// Update stats when searching
+function updateSearchStats(visible, total) {
+  const statsHtml = `
+    <div style="padding: 12px 16px; background: var(--background); border-radius: var(--radius-sm); border-left: 3px solid var(--primary);">
+      <div style="font-size: 0.85rem; color: var(--text-secondary);">Search Results</div>
+      <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${visible} of ${total}</div>
+    </div>
+  `;
+  
+  // Show filtered stats alongside regular stats
+  const existingStats = learnerStats.innerHTML;
+  if (!existingStats.includes('Search Results')) {
+    learnerStats.innerHTML = statsHtml + existingStats;
+  } else {
+    // Update the search results number
+    learnerStats.querySelector('div:first-child .font-size\\:1\\.5rem, div:first-child div[style*="font-size: 1.5rem"]').textContent = `${visible} of ${total}`;
+  }
+}
 
 /* ===========================
    EXPORT TO EXCEL
@@ -308,6 +707,8 @@ exportExcelBtn.addEventListener('click', async () => {
         last_name,
         gender,
         date_of_birth,
+        guardian_phone,
+        guardian_phone_2,
         classes(id, name, level)
       `)
       .eq("active", true)
@@ -337,7 +738,9 @@ exportExcelBtn.addEventListener('click', async () => {
         'First Name': learner.first_name,
         'Last Name': learner.last_name,
         'Gender': learner.gender || '',
-        'Date of Birth': learner.date_of_birth || ''
+        'Date of Birth': learner.date_of_birth || '',
+        'Guardian Phone 1': learner.guardian_phone || '',
+        'Guardian Phone 2': learner.guardian_phone_2 || ''
       });
     });
     
@@ -362,7 +765,9 @@ exportExcelBtn.addEventListener('click', async () => {
         { wch: 15 }, // First Name
         { wch: 15 }, // Last Name
         { wch: 10 }, // Gender
-        { wch: 15 }  // Date of Birth
+        { wch: 15 }, // Date of Birth
+        { wch: 15 }, // Guardian Phone 1
+        { wch: 15 }  // Guardian Phone 2
       ];
       
       // Add sheet to workbook (limit sheet name to 31 chars)
@@ -447,6 +852,24 @@ previewBtn.addEventListener("click", async () => {
           if (row.date_of_birth) {
             dateOfBirth = excelDateToJSDate(row.date_of_birth);
           }
+          
+          // Validate and normalize guardian phones
+          let guardianPhone = null;
+          let guardianPhone2 = null;
+          
+          if (row.guardian_phone || row.guardian_phone_1) {
+            const phoneValidation = validatePhoneNumber(row.guardian_phone || row.guardian_phone_1);
+            if (phoneValidation.valid) {
+              guardianPhone = phoneValidation.normalized;
+            }
+          }
+          
+          if (row.guardian_phone_2) {
+            const phoneValidation2 = validatePhoneNumber(row.guardian_phone_2);
+            if (phoneValidation2.valid) {
+              guardianPhone2 = phoneValidation2.normalized;
+            }
+          }
 
           const learner = {
             admission_no: admissionNo,
@@ -454,10 +877,22 @@ previewBtn.addEventListener("click", async () => {
             last_name: row.last_name || "",
             gender: row.gender || "",
             date_of_birth: dateOfBirth,
-            class_id: bulkClassSelect.value
+            class_id: bulkClassSelect.value,
+            guardian_phone: guardianPhone,
+            guardian_phone_2: guardianPhone2
           };
 
           bulkLearners.push(learner);
+
+          const phoneStatus = guardianPhone && guardianPhone2
+            ? '<span style="color: #10b981;">✓✓</span>' 
+            : guardianPhone || guardianPhone2
+            ? '<span style="color: #10b981;">✓</span>'
+            : '<span style="color: #9ca3af;">-</span>';
+          
+          const phoneDisplay = [guardianPhone, guardianPhone2]
+            .filter(p => p)
+            .join(', ') || 'N/A';
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
@@ -465,13 +900,16 @@ previewBtn.addEventListener("click", async () => {
             <td>${row.first_name} ${row.last_name}</td>
             <td>${row.gender || 'N/A'}</td>
             <td>${dateOfBirth || 'N/A'}</td>
+            <td>${phoneDisplay} ${phoneStatus}</td>
           `;
           previewBody.appendChild(tr);
         });
 
         previewTable.classList.remove("hidden");
         saveBulkBtn.classList.remove("hidden");
-        showAlert(`${bulkLearners.length} learners ready to be saved`, "info");
+        
+        const validPhones = bulkLearners.filter(l => l.guardian_phone).length;
+        showAlert(`${bulkLearners.length} learners ready (${validPhones} with phone numbers)`, "info");
       } catch (error) {
         showAlert("Error reading Excel file: " + error.message, "error");
       } finally {
@@ -525,3 +963,4 @@ checkAuth();
 loadClasses();
 generateAdmissionNo();
 loadLearners();
+setupPhoneInputFormatter();
